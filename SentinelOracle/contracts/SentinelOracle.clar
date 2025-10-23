@@ -208,6 +208,62 @@
   )
 )
 
+;; Calculate and distribute rewards to users with accurate predictions
+;; This function evaluates each user's prediction accuracy against the actual outcome,
+;; determines reward eligibility, calculates proportional rewards based on stake and accuracy,
+;; and updates user reputation scores accordingly
+(define-public (claim-rewards (period uint))
+  (let
+    (
+      (sender tx-sender)
+      (submission (unwrap! (map-get? sentiment-submissions {user: sender, period: period}) err-no-submission))
+      (period-data (unwrap! (map-get? period-sentiment {period: period}) err-no-submission))
+    )
+    ;; Validations
+    (asserts! (get finalized period-data) err-not-finalized)
+    (asserts! (not (get claimed submission)) err-already-submitted)
+    
+    ;; Calculate accuracy and determine reward
+    (let
+      (
+        (prediction (get sentiment-score submission))
+        (actual (get actual-outcome period-data))
+        (accuracy (calculate-accuracy prediction actual))
+        (is-accurate (>= accuracy accuracy-threshold))
+        (base-reward (get stake-amount submission))
+        (accuracy-multiplier (/ accuracy u100))
+        (final-reward (if is-accurate
+                         (+ base-reward (/ (* base-reward accuracy-multiplier) u2))
+                         (/ base-reward u2))) ;; Partial refund if inaccurate
+      )
+      ;; Update submission as claimed
+      (map-set sentiment-submissions
+        {user: sender, period: period}
+        (merge submission {claimed: true})
+      )
+      
+      ;; Update user reputation
+      (update-user-reputation sender is-accurate)
+      
+      ;; Update total rewards for user
+      (let
+        (
+          (user-rep (unwrap! (map-get? user-reputation {user: sender}) err-no-submission))
+        )
+        (map-set user-reputation
+          {user: sender}
+          (merge user-rep {total-rewards: (+ (get total-rewards user-rep) final-reward)})
+        )
+      )
+      
+      ;; Update global state
+      (var-set total-staked (- (var-get total-staked) (get stake-amount submission)))
+      
+      (ok final-reward)
+    )
+  )
+)
+
 ;; Read-only functions
 (define-read-only (get-current-period)
   (ok (var-get current-period))
